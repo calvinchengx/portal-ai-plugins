@@ -67,7 +67,7 @@ Cursor uses the shared Portal CLI workflows.
 | `service` | Produce a concise operational service briefing |
 | `actions` | Discover, inspect, preview, and safely invoke Portal actions |
 
-Claude Code exposes the workflows as slash commands:
+Claude Code exposes the plugin skills directly under the Portal namespace:
 
 ```text
 /portal:setup [instance-name or backend-url]

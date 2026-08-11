@@ -5,7 +5,6 @@ This repository packages Spotify Portal workflows for Claude Code, Codex, and Cu
 ## Repository structure
 
 - `skills/` contains the canonical workflow instructions.
-- `commands/` contains thin Claude Code command adapters.
 - `.claude-plugin/`, `.codex-plugin/`, and `.cursor-plugin/` contain host manifests.
 - `assets/` contains shared Portal branding and product imagery.
 - `.claude-plugin/marketplace.json` exposes the repository as a Claude Code marketplace.
@@ -13,9 +12,9 @@ This repository packages Spotify Portal workflows for Claude Code, Codex, and Cu
 ## Design rules
 
 - Keep the plugin at the repository root while this repository contains only Portal; introduce `plugins/<name>/` only for a real multi-plugin marketplace.
-- Keep the plugin identifier `portal` so Claude Code commands use the `/portal:<workflow>` namespace.
+- Keep the plugin identifier `portal` so Claude Code skills use the `/portal:<workflow>` namespace.
 - Keep `doctor` read-only.
-- Keep command files as thin delegates to the matching skill.
+- Keep each workflow canonical in `skills/`.
 - Do not publish the bundled skills as standalone packages.
 - Do not add release automation unless a tagged GitHub release or another distribution channel is explicitly planned.
 - Preserve JSON output and dry-run safeguards when documenting Portal CLI operations.
