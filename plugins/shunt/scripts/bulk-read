@@ -1,8 +1,8 @@
 #!/bin/bash
-# Delegate file reading to AiKA bulk-reader mode
+# Delegate file reading to the bulk-reader worker
 # Usage: bulk-read --question "what does this do?" --paths file1.ts file2.ts
 
-. "$(cd "$(dirname "$0")" && pwd)/lib/aika.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib/worker.sh"
 
 MODE_NAME="bulk-reader"
 
@@ -37,22 +37,25 @@ for path in "${paths[@]}"; do
 done
 
 shunt_preflight || exit 1
-shunt_tmpfile message_file || exit 1
+shunt_tmpfile corpus_file || exit 1
+shunt_tmpfile question_file || exit 1
 
 # Wrap each file in XML tags so the model sees clear boundaries. Stream
-# straight into the message file: no corpus-sized shell variable, and file
+# straight into the corpus file: no corpus-sized shell variable, and file
 # contents survive byte-for-byte.
 for path in "${paths[@]}"; do
   {
     printf '<file path="%s">\n' "$path"
     cat "$path"
     printf '</file>\n\n'
-  } >> "$message_file"
+  } >> "$corpus_file"
 done
-printf 'Question: %s\n' "$question" >> "$message_file"
 
-shunt_invoke "$MODE_NAME" "$message_file" || exit 1
+# Corpus and question travel as separate blocks: the corpus is the cached
+# prefix, so re-asking over the same --paths reads the cache instead of
+# paying full price for the files again.
+printf 'Question: %s\n' "$question" > "$question_file"
 
-# Token usage to stderr
-char_count=$(wc -c < "$message_file" | tr -d ' ')
-echo "[shunt: ~$((char_count / 4)) input tokens | delegated to $MODE_NAME]" >&2
+shunt_invoke "$MODE_NAME" "$corpus_file" "$question_file" || exit 1
+
+echo "[shunt: $MODE_NAME | $SHUNT_MODEL | ${SHUNT_LAST_USAGE:-usage unavailable}]" >&2

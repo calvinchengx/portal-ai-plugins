@@ -1,8 +1,8 @@
 #!/bin/bash
-# Delegate boilerplate generation to AiKA code-writer mode
+# Delegate boilerplate generation to the code-writer worker
 # Usage: code-write --spec "write tests for UserService" --reference ref.test.ts --target out.test.ts
 
-. "$(cd "$(dirname "$0")" && pwd)/lib/aika.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lib/worker.sh"
 
 MODE_NAME="code-writer"
 
@@ -51,14 +51,18 @@ if [ -n "$target" ] && [ ! -d "$(dirname "$target")" ]; then
 fi
 
 shunt_preflight || exit 1
-shunt_tmpfile message_file || exit 1
+shunt_tmpfile reference_file || exit 1
+shunt_tmpfile spec_file || exit 1
 shunt_tmpfile answer_file || exit 1
 shunt_tmpfile clean_file || exit 1
 
-printf 'Spec: %s\n\nReference:\n' "$spec" > "$message_file"
-cat "$reference" >> "$message_file"
+# Reference and spec travel as separate blocks: the reference is the cached
+# prefix, so several specs against the same reference only pay for it once.
+printf 'Reference:\n' > "$reference_file"
+cat "$reference" >> "$reference_file"
+printf 'Spec: %s\n' "$spec" > "$spec_file"
 
-shunt_invoke "$MODE_NAME" "$message_file" > "$answer_file" || exit 1
+shunt_invoke "$MODE_NAME" "$reference_file" "$spec_file" > "$answer_file" || exit 1
 
 # Strip the markdown fence the model sometimes wraps the whole answer in.
 # Only the outer pair: fences inside the code (a fenced example in a
@@ -88,4 +92,4 @@ else
 fi
 
 # Token usage to stderr
-echo "[shunt: delegated to $MODE_NAME]" >&2
+echo "[shunt: $MODE_NAME | $SHUNT_MODEL | ${SHUNT_LAST_USAGE:-usage unavailable}]" >&2

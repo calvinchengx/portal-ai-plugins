@@ -1,8 +1,8 @@
 #!/bin/bash
 # Script evals for scripts/bulk-read and scripts/code-write.
 #
-# Drives the real scripts end to end against a stubbed portal-cli installed
-# via PORTAL_CLI_BIN, so these need no Portal instance, no auth and no tokens.
+# Drives the real scripts end to end against a stubbed HTTP layer installed via
+# SHUNT_CURL_BIN, so these need no network, no credential and no tokens.
 #
 # Prints one PASS/FAIL line per check plus a machine-readable "## <pass> <fail>"
 # trailer for run.sh.
@@ -27,20 +27,23 @@ check() {
   fi
 }
 
-# A fake portal-cli that answers with whatever STUB_ANSWER_FILE holds, in the
-# envelope `portal-cli actions ... --json` prints. STUB_EXIT forces a failure.
-STUB="$WORKDIR/portal-cli"
+# A fake curl that answers with whatever STUB_ANSWER_FILE holds, in the shape
+# POST /v1/messages returns. STUB_ERROR forces an API error body instead.
+STUB="$WORKDIR/curl"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/bash
-if [ -n "${STUB_EXIT:-}" ] && [ "$STUB_EXIT" -ne 0 ]; then
-  echo '{"error":"stub failure","remediation":"none"}'
-  exit "$STUB_EXIT"
+if [ -n "${STUB_ERROR:-}" ]; then
+  echo '{"type":"error","error":{"type":"api_error","message":"stub failure"}}'
+  exit 0
 fi
 jq -n --rawfile text "$STUB_ANSWER_FILE" \
-  '{text: $text, mode: {id: "id-stub", name: "code-writer"}}'
+  '{type: "message", role: "assistant", content: [{type: "text", text: $text}],
+    stop_reason: "end_turn",
+    usage: {input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5}}'
 STUBEOF
 chmod +x "$STUB"
-export PORTAL_CLI_BIN="$STUB"
+export SHUNT_CURL_BIN="$STUB"
+export ANTHROPIC_API_KEY="test-key-not-real"
 
 ANSWER="$WORKDIR/answer.txt"
 export STUB_ANSWER_FILE="$ANSWER"
@@ -99,7 +102,7 @@ check "missing-target-dir-refused" "1" "$?" "a target directory that does not ex
 
 # A failed invocation must not leave a truncated or empty target behind.
 untouched="$WORKDIR/untouched.ts"
-( export STUB_EXIT=1
+( export STUB_ERROR=1
   "$PLUGIN_DIR/scripts/code-write" --spec s --reference "$REFERENCE" --target "$untouched" >/dev/null 2>&1 )
 check "no-target-on-failure" "false" "$([ -e "$untouched" ] && echo true || echo false)" \
   "a failed call writes nothing"

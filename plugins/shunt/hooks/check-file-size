@@ -58,4 +58,4 @@ else
   measure="${bytes} bytes (threshold: ${MAX_BYTES})"
 fi
 
-deny "File is ${measure}. Use the /bulk-reader skill to delegate this read to AiKA instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need."
+deny "File is ${measure}. Use the /bulk-reader skill to delegate this read to the worker model instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need."

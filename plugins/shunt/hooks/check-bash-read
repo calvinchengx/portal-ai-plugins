@@ -119,9 +119,9 @@ while IFS= read -r segment; do
   case "$bytes" in ''|*[!0-9]*) continue ;; esac
 
   if [ "$lines" -gt "$MIN_LINES" ]; then
-    deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to AiKA instead of cat/head/tail."
+    deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to the worker model instead of cat/head/tail."
   elif [ "$bytes" -gt "$MAX_BYTES" ]; then
-    deny "File is ${bytes} bytes (threshold: ${MAX_BYTES}). Use the /bulk-reader skill to delegate this read to AiKA instead of cat/head/tail."
+    deny "File is ${bytes} bytes (threshold: ${MAX_BYTES}). Use the /bulk-reader skill to delegate this read to the worker model instead of cat/head/tail."
   fi
 done <<< "$segments"
 

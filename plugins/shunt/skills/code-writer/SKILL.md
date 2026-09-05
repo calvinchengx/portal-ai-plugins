@@ -1,6 +1,6 @@
 ---
 name: code-writer
-description: "Delegate boilerplate code generation to AiKA. Use for tests, config, docstrings, type stubs, or any generation where >80% is predictable from reference files."
+description: "Delegate boilerplate code generation to a cheap worker model. Use for tests, config, docstrings, type stubs, or any generation where >80% is predictable from reference files."
 ---
 
 ```bash
@@ -12,6 +12,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/code-write --spec "<what to generate>" --reference
 ```
 
 Each call is independent. To build on what was just generated, pass that file as the
-`--reference` for the next call.
+`--reference` for the next call. `--target` refuses to overwrite an existing file unless
+you add `--force`.
 
 Review the output and make surgical edits for the ~5-20% that needs Claude-level judgment.

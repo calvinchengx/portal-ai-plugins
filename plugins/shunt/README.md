@@ -1,137 +1,66 @@
 # shunt
 
-A Claude Code plugin that shunts I/O-heavy work to AiKA modes, saving 82-94% of tokens on large file reads and boilerplate generation.
+A Claude Code plugin that shunts I/O-heavy work — bulk file reads and boilerplate generation — to a cheap worker model, so the frontier model's context is spent on thinking rather than on I/O.
+
+This is a fork of [Spotify's shunt](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt) with the transport swapped: upstream delegates through the Portal CLI's `aika:invoke-chat` action, which requires a Portal instance with AiKA enabled. This version calls the Claude API directly, so it needs only an Anthropic credential.
 
 ## How it works
 
 Three layers, from hard gate to soft suggestion:
 
 1. **Hooks** block Claude from reading large files and redirect to the bulk-reader skill
-2. **Scripts** handle the AiKA invocation and output cleanup
+2. **Scripts** handle the API call and output cleanup
 3. **Skills** tell Claude when and how to call the scripts
 
-Claude never assembles bash pipelines from prose. It calls a script with named arguments. The scripts handle everything internally.
-
-Delegation goes through the Portal CLI actions registry — one `aika:invoke-chat` call per delegation — so the plugin works against any Portal instance with AiKA enabled. Modes are addressed by name and resolved server-side: case-insensitive, preferring your own mode, then your groups', then public ones; a name matching nothing or several modes equally fails with the candidate ids.
+Claude never assembles bash pipelines from prose. It calls a script with named arguments.
 
 ## Prerequisites
 
 - [`jq`](https://jqlang.org) — `brew install jq`
-- The **portal** plugin from this marketplace, which provides the Portal CLI that shunt delegates through:
+- `curl` (present on macOS and most Linux distributions)
+- An Anthropic credential — either `ant auth login` (stores a profile the scripts read) or an exported `ANTHROPIC_API_KEY`
 
-```bash
-claude plugin install portal@portal
-```
+No Portal instance, no Portal CLI, no `portal` plugin.
 
-Then, in a new session, set up and authenticate the CLI against your Portal instance:
-
-```text
-/portal:setup
-```
-
-Check whether the two AiKA modes (`bulk-reader` and `code-writer`) already exist on your instance — many instances ship them as public modes:
-
-```bash
-portal-cli actions aika:list-modes --json --input '{"search": "bulk-reader"}'
-```
-
-If they exist, no mode creation is needed — just install the plugin and go. If not, or to create your own customized versions (e.g. different model or instructions):
-
-```bash
-portal-cli actions aika:create-mode --input '{
-  "name": "bulk-reader",
-  "description": "Bulk file reader for code analysis",
-  "instructions": "You are a precise code analyst. Read the provided files and answer the question concisely. Output structured bullets only. No greetings, no prose, no preambles, no summaries. Lead every bullet with the exact name, type, or line number. Use nested bullets for details. Skip anything the caller did not ask for.",
-  "tags": ["coding", "delegation"],
-  "resource_limits": { "temperature": 0.2 }
-}'
-
-portal-cli actions aika:create-mode --input '{
-  "name": "code-writer",
-  "description": "Boilerplate code generator",
-  "instructions": "You generate code files based on a spec and reference files. Match the existing patterns, conventions, naming, and style exactly. Output only the code — no explanations, no markdown fences unless asked. If the spec is ambiguous, make reasonable choices that match the patterns in the reference code.",
-  "tags": ["coding", "delegation"],
-  "resource_limits": { "temperature": 0.2 }
-}'
-```
-
-A mode you create is private and owned by you, and name resolution prefers your own modes — so your customized `bulk-reader` automatically shadows the public one, no configuration needed.
-
-## Plugin structure
-
-```
-shunt/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin manifest (name, description, version)
-├── hooks/
-│   ├── hooks.json           # Hook registration (PreToolUse matchers)
-│   ├── check-file-size      # Blocks Read on files > 350 lines
-│   └── check-bash-read      # Blocks cat/head/tail on large files
-├── scripts/
-│   ├── lib/
-│   │   └── aika.sh          # Shared aika:invoke-chat plumbing
-│   ├── bulk-read            # Invokes the bulk-reader mode
-│   └── code-write           # Invokes the code-writer mode
-├── skills/
-│   ├── bulk-reader/
-│   │   └── SKILL.md         # When/how to call bulk-read
-│   └── code-writer/
-│       └── SKILL.md         # When/how to call code-write
-└── evals/
-    ├── run.sh                # Runs hook + transport + script evals (77 tests)
-    ├── hook-evals.json       # Read hook test cases (20)
-    ├── bash-hook-evals.json  # Bash hook test cases (25)
-    ├── transport-evals.sh    # scripts/lib/aika.sh against a stubbed CLI (17)
-    ├── script-evals.sh       # bulk-read + code-write against a stubbed CLI (15)
-    ├── evals.json            # End-to-end skill test cases (3)
-    ├── benchmarks.json       # Token savings scenarios (4)
-    └── fixtures/             # Test fixture files
-```
+**Delegation costs money.** Every call bills to your Anthropic account at the worker model's rate. Haiku 4.5 is $1/MTok input and $5/MTok output at the time of writing; the corpus is cached, so re-asking over the same files reads at cache rates rather than full input price.
 
 ## Scripts
 
 ### bulk-read
 
-Delegates file reading to AiKA. Files are wrapped in XML tags (`<file path="...">`) for clear boundaries.
+Delegates file reading to the worker. Files are wrapped in XML tags (`<file path="...">`) for clear boundaries.
 
 ```bash
 bulk-read --question "What does this service do?" --paths src/Service.java src/Handler.java
 
-# Follow-up: ask again with the same paths
+# Follow-up: ask again with the same paths — the corpus is a cached prefix,
+# so the second question reads the cache instead of re-paying for the files
 bulk-read --question "Which methods call the database?" --paths src/Service.java src/Handler.java
 ```
 
 ### code-write
 
-Delegates boilerplate generation to AiKA. Strips a wrapping markdown fence from the output, leaving fences inside the code alone. Can write directly to disk via `--target`; an existing target is refused unless you pass `--force`. `--reference` is required — without a file to match patterns against, the worker would generate context-free code that fits nothing in the project.
+Delegates boilerplate generation. Strips a wrapping markdown fence from the output, leaving fences inside the code alone. Can write directly to disk via `--target`; an existing target is refused unless you pass `--force`. `--reference` is required — without a file to match patterns against, the worker would generate context-free code that fits nothing in the project.
 
 ```bash
-# Generate and write to file
 code-write --spec "Write tests for UserService" --reference tests/OrderTest.java --target tests/UserTest.java
 
-# Build on what was just generated by referencing it
-code-write --spec "Now add edge case tests" --reference tests/UserTest.java --target tests/UserEdgeCases.java
+# The reference is the cached prefix, so several specs against one reference pay for it once
+code-write --spec "Now add edge case tests" --reference tests/OrderTest.java --target tests/UserEdgeCases.java
 
 # Replace a file you already generated
 code-write --spec "Regenerate with async setup" --reference tests/OrderTest.java --target tests/UserTest.java --force
-
-# Output to stdout
-code-write --spec "Generate a config stub" --reference config/existing.yaml
 ```
 
 ### One shot per call
 
-`aika:invoke-chat` is ephemeral: nothing is stored server-side, and the action's own follow-up
-mechanism is for the caller to replay prior turns. Replaying a file corpus is the exact cost this
-plugin exists to avoid, so shunt does not do it — every call stands alone. Re-sending files is
-free where it matters, because the corpus goes to the worker model and never enters Claude's
-context.
+No conversation state is kept anywhere. Every call stands alone — re-send the corpus rather than trying to carry context across calls. That is cheap by design: the corpus travels as a cached content block, and it never enters Claude's context at all.
 
 ## Hooks
 
 ### check-file-size (Read hook)
 
-Fires on every `Read` tool call. Blocks full-file reads on files exceeding `SHUNT_MIN_LINES` (default 350) **or** `SHUNT_MAX_BYTES` (default 50000). The byte ceiling catches minified and single-line JSON files, which a line count cannot see. Allows through:
+Fires on every `Read`. Blocks full-file reads above `SHUNT_MIN_LINES` (default 350) **or** `SHUNT_MAX_BYTES` (default 50000). The byte ceiling catches minified and single-line JSON files, which a line count cannot see. Allows through:
 - Targeted reads (offset or limit set)
 - Files under both thresholds
 - Nonexistent files (let Read handle the error)
@@ -139,7 +68,7 @@ Fires on every `Read` tool call. Blocks full-file reads on files exceeding `SHUN
 
 ### check-bash-read (Bash hook)
 
-Fires on every `Bash` tool call. Catches `cat`, `less`, `more` on large files, and `head`/`tail` when their count exceeds the threshold. Each `&&`, `||` and `;` segment is judged on its own, so a read buried in a chain (`cd src && cat big.ts`) is still caught, and arguments are split quote-aware so a path containing spaces resolves. Allows through:
+Fires on every `Bash`. Catches `cat`, `less`, `more` on large files, and `head`/`tail` when their count exceeds the threshold. Each `&&`, `||` and `;` segment is judged on its own, so a read buried in a chain (`cd src && cat big.ts`) is still caught, and arguments are split quote-aware so a path containing spaces resolves. Allows through:
 - Piped commands (`cat file | grep`) — targeted reads
 - Redirections (`cat file > out`) — not reading into context
 - Bounded `head`/`tail` reads — `head -100` puts 100 lines in context, not the file, so it follows the same policy as a Read with an explicit offset/limit
@@ -154,46 +83,47 @@ All settings are environment variables — add them to the `env` block in `.clau
 |----------|---------|---------|
 | `SHUNT_MIN_LINES` | `350` | Line count above which the hooks block and redirect |
 | `SHUNT_MAX_BYTES` | `50000` | Byte count above which the hooks block, for minified and single-line files |
-| `SHUNT_PORTAL_INSTANCE` | CLI default | Portal instance name or URL to invoke against |
-| `PORTAL_CLI_BIN` | `portal-cli`, else `npx` | Override how portal-cli is launched |
-| `SHUNT_MAX_PAYLOAD_BYTES` | `400000` (`120000` on Linux) | Request ceiling, since input travels through argv |
-| `SHUNT_TIMEOUT_SECONDS` | `180` | Timeout for one action invocation |
-| `SHUNT_BULK_READER_MODE_ID` | — | Pin a specific mode id if the name is ambiguous |
-| `SHUNT_CODE_WRITER_MODE_ID` | — | Pin a specific mode id if the name is ambiguous |
+| `SHUNT_MODEL` | `claude-haiku-4-5` | Worker model. `claude-sonnet-5` when the worker needs more judgment |
+| `SHUNT_MAX_TOKENS` | `16000` | Output ceiling for one delegation |
+| `SHUNT_MAX_PAYLOAD_BYTES` | `500000` | Request ceiling, bounded by the worker's context window |
+| `SHUNT_TIMEOUT_SECONDS` | `180` | Timeout for one call |
+| `SHUNT_API_URL` | Anthropic Messages API | Override the endpoint |
+| `SHUNT_CURL_BIN` | `curl` | Override the HTTP client (the evals use this to stub the transport) |
+
+Credentials are resolved without ever prompting: `ANTHROPIC_API_KEY` first, then an `ant auth login` profile. An unset `ANTHROPIC_API_KEY` does not mean there is no credential.
 
 ## What doesn't get delegated
 
-The plugin is designed to know when NOT to delegate:
 - **Debugging** — requires Claude's reasoning, not a summary
 - **Editing** — Claude needs exact content in context; use targeted reads (offset/limit)
-- **Small files** — delegation overhead exceeds savings under 350 lines
+- **Small files** — delegation overhead exceeds savings under the threshold
 - **Architectural decisions** — judgment calls stay on Claude
 
 ## Evals
 
 ```bash
-# Hook routing, transport plumbing and script behavior — needs no Portal access
+# Hook routing, transport plumbing and script behavior — no network, no credential, no spend
 bash evals/run.sh
-
-# Also re-measure token savings against the real modes — needs portal-cli auth
-bash evals/run.sh --benchmark
 ```
 
-## Benchmarks
+84 checks across four suites: the two hooks against generated fixtures, `lib/worker.sh` against a stubbed HTTP layer, and both scripts end to end against a stubbed `curl`. Nothing in the default suite calls the API or costs money.
 
-Tested against a 162K-line Java monorepo:
+## On savings claims
 
-| Scenario | Lines | Without shunt | With shunt | Savings |
-|----------|-------|--------------|------------|---------|
-| Single large file | 4,014 | 33,684 tokens | 5,737 tokens | 82% |
-| Source + test pair | 7,408 | 75,990 tokens | 4,148 tokens | 94% |
-| Multi-file cross-service | 1,281 | 16,221 tokens | 821 tokens | 94% |
-| Code-write | 3,667 | 40,614 tokens + generation | 833 lines to disk | - |
+Upstream's README publishes an 82–94% savings table measured against a 162K-line Java monorepo. **Those numbers are not reproducible from this repository** — the checked-in benchmark fixtures total 692 lines, and the code-write benchmark hardcodes the with-shunt cost to zero, making its savings 100% by construction. This fork does not carry that table, and does not make a savings claim it cannot demonstrate.
 
-Mean bulk-read savings: **90%**
+What can be said precisely:
+
+- The delegated portion runs on a model that costs 5× less than Opus 5 on both input and output.
+- The corpus never enters Claude's context, so it does not consume the frontier model's context window.
+- Total savings are bounded by the fraction of your work that is bulk reading. A 90% cut on a third of your tokens is a 30% cut overall.
+- Claude Code's built-in subagents already read files in a separate context and return conclusions, for free. The marginal gain here is the worker's lower price plus the hooks' enforcement — measure against subagents, not against reading whole files into the main context.
+
+If you want a number for your own codebase, measure cost per completed task, not tokens per request.
 
 ## Known limitations
 
 - **No enforcement for code-writer** — only bulk-reader has hook enforcement. Code-writer relies on Claude recognizing when to use it via the skill description.
-- **Request size** — `aika:invoke-chat` input is passed on the command line, so a request must fit in `ARG_MAX` (1 MB on macOS, shared with the environment; Linux additionally caps a single argument at 128 KiB). shunt refuses anything over `SHUNT_MAX_PAYLOAD_BYTES` with a clear error rather than failing with `E2BIG`. Split into smaller batches.
-- **Invocation timeout** — shunt caps one action invocation at `SHUNT_TIMEOUT_SECONDS` (default 180). Very large generations can exceed it; raise the timeout or split the spec into smaller calls.
+- **Context window** — the worker's window is the real request ceiling. Haiku 4.5 holds 200K tokens; `SHUNT_MAX_PAYLOAD_BYTES` guards against overrunning it with a clear error rather than a truncated read.
+- **Latency** — a delegation is a network round trip. Expect seconds, not milliseconds; `SHUNT_TIMEOUT_SECONDS` caps it.
+- **Line numbers** — worker summaries are not a reliable source of exact line numbers. Verify before using them in edits.

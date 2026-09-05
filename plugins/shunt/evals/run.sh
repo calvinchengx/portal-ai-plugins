@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash evals/run.sh              # hooks only (no Portal access needed)
-#   bash evals/run.sh --benchmark  # hooks + token savings (requires portal-cli auth)
+#   bash evals/run.sh --benchmark  # hooks + token savings (SPENDS MONEY: real API calls)
 #   bash evals/run.sh --all        # every eval suite
 
 set -euo pipefail
@@ -240,10 +240,10 @@ run_benchmark_code_write() {
 }
 
 run_benchmarks() {
-  # shellcheck source=../scripts/lib/aika.sh
-  . "$PLUGIN_DIR/scripts/lib/aika.sh"
+  # shellcheck source=../scripts/lib/worker.sh
+  . "$PLUGIN_DIR/scripts/lib/worker.sh"
   if ! shunt_preflight; then
-    printf "\n\033[33mSkipping benchmarks: portal-cli or jq not available\033[0m\n"
+    printf "\n\033[33mSkipping benchmarks: jq, curl, or an Anthropic credential is missing\033[0m\n"
     return
   fi
 
@@ -323,8 +323,8 @@ run_benchmarks() {
 
 run_suite "$SCRIPT_DIR/../hooks/check-file-size" "$SCRIPT_DIR/hook-evals.json" "Read hook (check-file-size)"
 run_suite "$SCRIPT_DIR/../hooks/check-bash-read" "$SCRIPT_DIR/bash-hook-evals.json" "Bash hook (check-bash-read)"
-run_child_suite transport-evals.sh "Transport (scripts/lib/aika.sh, stubbed portal-cli)"
-run_child_suite script-evals.sh "Scripts (bulk-read + code-write, stubbed portal-cli)"
+run_child_suite transport-evals.sh "Transport (scripts/lib/worker.sh, stubbed HTTP)"
+run_child_suite script-evals.sh "Scripts (bulk-read + code-write, stubbed HTTP)"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"
