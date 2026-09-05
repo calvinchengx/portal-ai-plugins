@@ -9,12 +9,14 @@ MODE_NAME="code-writer"
 spec=""
 reference=""
 target=""
+force=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --spec)      spec="$2"; shift 2 ;;
     --reference) reference="$2"; shift 2 ;;
     --target)    target="$2"; shift 2 ;;
+    --force)     force=true; shift ;;
     *)           shift ;;
   esac
 done
@@ -36,24 +38,53 @@ if [ ! -f "$reference" ]; then
   exit 1
 fi
 
+# Generated code is not worth someone's existing work. Refuse an occupied
+# target rather than silently replacing it.
+if [ -n "$target" ] && [ -e "$target" ] && [ "$force" != true ]; then
+  echo "Error: target already exists: $target" >&2
+  echo "Pass --force to overwrite it, or choose a different --target." >&2
+  exit 1
+fi
+if [ -n "$target" ] && [ ! -d "$(dirname "$target")" ]; then
+  echo "Error: target directory does not exist: $(dirname "$target")" >&2
+  exit 1
+fi
+
 shunt_preflight || exit 1
 shunt_tmpfile message_file || exit 1
 shunt_tmpfile answer_file || exit 1
+shunt_tmpfile clean_file || exit 1
 
 printf 'Spec: %s\n\nReference:\n' "$spec" > "$message_file"
 cat "$reference" >> "$message_file"
 
 shunt_invoke "$MODE_NAME" "$message_file" > "$answer_file" || exit 1
 
-# Strip markdown fences (model sometimes wraps despite instructions)
-clean=$(sed '/^```/d' "$answer_file")
+# Strip the markdown fence the model sometimes wraps the whole answer in.
+# Only the outer pair: fences inside the code (a fenced example in a
+# docstring) are content, and deleting every ``` line corrupted them.
+awk '
+  { lines[NR] = $0 }
+  END {
+    first = 0; last = 0
+    for (i = 1; i <= NR; i++) if (lines[i] ~ /[^ \t]/) { first = i; break }
+    for (i = NR; i >= 1; i--) if (lines[i] ~ /[^ \t]/) { last = i; break }
+    start = 1; end = NR
+    if (first && lines[first] ~ /^[ \t]*```/) {
+      start = first + 1
+      if (last > first && lines[last] ~ /^[ \t]*```[ \t]*$/) end = last - 1
+    }
+    for (i = start; i <= end; i++) print lines[i]
+  }
+' "$answer_file" > "$clean_file"
 
-# Write to target or stdout
+# Write to target or stdout. cat, not echo: generated content starting with
+# -n or containing backslashes must survive verbatim.
 if [ -n "$target" ]; then
-  echo "$clean" > "$target"
+  cat "$clean_file" > "$target" || exit 1
   echo "Wrote $(wc -l < "$target" | tr -d ' ') lines to $target" >&2
 else
-  echo "$clean"
+  cat "$clean_file"
 fi
 
 # Token usage to stderr

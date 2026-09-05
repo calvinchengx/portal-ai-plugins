@@ -136,15 +136,17 @@ run_suite() {
 
 # ── Transport suite ──
 
-# Runs as a child process: the suite stubs portal-cli, and that stub must not
+# Runs as a child process: these suites stub portal-cli, and that stub must not
 # leak into the benchmarks below, which need the real one.
-run_transport_suite() {
+run_child_suite() {
+  local suite="$1" label="$2"
+
   echo ""
-  echo "Transport (scripts/lib/aika.sh, stubbed portal-cli)"
+  echo "$label"
   echo "────────────────────────────────────────────────────────────────"
 
   local output counts p f
-  output=$(bash "$SCRIPT_DIR/transport-evals.sh" 2>&1) || true
+  output=$(bash "$SCRIPT_DIR/$suite" 2>&1) || true
 
   printf '%s\n' "$output" | grep -v '^## ' || true
   # `|| true` so a missing trailer reaches the fallback below instead of
@@ -154,7 +156,7 @@ run_transport_suite() {
   f=$(printf '%s' "$counts" | awk '{print $3}')
 
   if [ -z "$p" ]; then
-    printf "  \033[31mFAIL\033[0m  %-32s suite did not report results\n" "transport-evals"
+    printf "  \033[31mFAIL\033[0m  %-32s suite did not report results\n" "$suite"
     FAILED=$((FAILED + 1))
     TOTAL=$((TOTAL + 1))
     return
@@ -321,7 +323,8 @@ run_benchmarks() {
 
 run_suite "$SCRIPT_DIR/../hooks/check-file-size" "$SCRIPT_DIR/hook-evals.json" "Read hook (check-file-size)"
 run_suite "$SCRIPT_DIR/../hooks/check-bash-read" "$SCRIPT_DIR/bash-hook-evals.json" "Bash hook (check-bash-read)"
-run_transport_suite
+run_child_suite transport-evals.sh "Transport (scripts/lib/aika.sh, stubbed portal-cli)"
+run_child_suite script-evals.sh "Scripts (bulk-read + code-write, stubbed portal-cli)"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"
