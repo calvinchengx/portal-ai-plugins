@@ -5,79 +5,137 @@
     {
       "id": 1,
       "name": "cat-large-file",
-      "input": { "tool_input": { "command": "cat {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "Plain cat on large file — should block"
+      "input": {
+        "tool_input": {
+          "command": "cat {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "Plain cat on large file — should deny"
     },
     {
       "id": 2,
       "name": "cat-small-file",
-      "input": { "tool_input": { "command": "cat {{FIXTURES}}/small.txt" } },
-      "fixture": { "lines": 100 },
+      "input": {
+        "tool_input": {
+          "command": "cat {{FIXTURES}}/small.txt"
+        }
+      },
+      "fixture": {
+        "lines": 100
+      },
       "expected_decision": "allow",
       "reason": "Small file — not worth delegating"
     },
     {
       "id": 3,
       "name": "cat-with-flag",
-      "input": { "tool_input": { "command": "cat -n {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "cat with -n flag — should still block"
+      "input": {
+        "tool_input": {
+          "command": "cat -n {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "cat with -n flag — should still deny"
     },
     {
       "id": 4,
-      "name": "head-large-file",
-      "input": { "tool_input": { "command": "head {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "head on large file — should block"
+      "name": "head-default-count",
+      "input": {
+        "tool_input": {
+          "command": "head {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "allow",
+      "reason": "Bare head reads 10 lines — bounded, like a targeted Read"
     },
     {
       "id": 5,
       "name": "head-with-count",
-      "input": { "tool_input": { "command": "head -100 {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "head -100 — still a bulk read, block"
+      "input": {
+        "tool_input": {
+          "command": "head -100 {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "allow",
+      "reason": "head -100 is bounded under the threshold — same policy as offset/limit"
     },
     {
       "id": 6,
-      "name": "tail-large-file",
-      "input": { "tool_input": { "command": "tail {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "tail on large file — should block"
+      "name": "tail-default-count",
+      "input": {
+        "tool_input": {
+          "command": "tail {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "allow",
+      "reason": "Bare tail reads 10 lines — bounded"
     },
     {
       "id": 7,
       "name": "less-large-file",
-      "input": { "tool_input": { "command": "less {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "less on large file — should block"
+      "input": {
+        "tool_input": {
+          "command": "less {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "less dumps the whole file non-interactively — deny"
     },
     {
       "id": 8,
       "name": "cat-pipe",
-      "input": { "tool_input": { "command": "cat {{FIXTURES}}/large.txt | grep export" } },
-      "fixture": { "lines": 800 },
+      "input": {
+        "tool_input": {
+          "command": "cat {{FIXTURES}}/large.txt | grep export"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
       "expected_decision": "allow",
       "reason": "Piped command — targeted read"
     },
     {
       "id": 9,
       "name": "cat-redirect",
-      "input": { "tool_input": { "command": "cat {{FIXTURES}}/large.txt > /tmp/out.txt" } },
-      "fixture": { "lines": 800 },
+      "input": {
+        "tool_input": {
+          "command": "cat {{FIXTURES}}/large.txt > /tmp/out.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
       "expected_decision": "allow",
       "reason": "Redirect — copying file, not reading into context"
     },
     {
       "id": 10,
       "name": "non-read-command",
-      "input": { "tool_input": { "command": "git status" } },
+      "input": {
+        "tool_input": {
+          "command": "git status"
+        }
+      },
       "fixture": null,
       "expected_decision": "allow",
       "reason": "Not a file read command"
@@ -85,23 +143,39 @@
     {
       "id": 11,
       "name": "grep-command",
-      "input": { "tool_input": { "command": "grep -n 'export' {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
+      "input": {
+        "tool_input": {
+          "command": "grep -n 'export' {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
       "expected_decision": "allow",
       "reason": "grep is a targeted search — not caught"
     },
     {
       "id": 12,
       "name": "cat-quoted-path",
-      "input": { "tool_input": { "command": "cat \"{{FIXTURES}}/large.txt\"" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
+      "input": {
+        "tool_input": {
+          "command": "cat \"{{FIXTURES}}/large.txt\""
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "deny",
       "reason": "Quoted path — should still be caught"
     },
     {
       "id": 13,
       "name": "cat-nonexistent",
-      "input": { "tool_input": { "command": "cat /tmp/shunt-does-not-exist.txt" } },
+      "input": {
+        "tool_input": {
+          "command": "cat /tmp/shunt-does-not-exist.txt"
+        }
+      },
       "fixture": null,
       "expected_decision": "allow",
       "reason": "File doesn't exist — let Bash handle the error"
@@ -109,7 +183,11 @@
     {
       "id": 14,
       "name": "empty-command",
-      "input": { "tool_input": { "command": "" } },
+      "input": {
+        "tool_input": {
+          "command": ""
+        }
+      },
       "fixture": null,
       "expected_decision": "allow",
       "reason": "Empty command — pass through"
@@ -117,7 +195,9 @@
     {
       "id": 15,
       "name": "missing-command-field",
-      "input": { "tool_input": {} },
+      "input": {
+        "tool_input": {}
+      },
       "fixture": null,
       "expected_decision": "allow",
       "reason": "No command field — pass through"
@@ -125,18 +205,151 @@
     {
       "id": 16,
       "name": "more-large-file",
-      "input": { "tool_input": { "command": "more {{FIXTURES}}/large.txt" } },
-      "fixture": { "lines": 800 },
-      "expected_decision": "block",
-      "reason": "more on large file — only regex-matched command without coverage"
+      "input": {
+        "tool_input": {
+          "command": "more {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "more dumps the whole file non-interactively — deny"
     },
     {
       "id": 17,
       "name": "head-n-space-count",
-      "input": { "tool_input": { "command": "head -n 5 {{FIXTURES}}/large.txt" } },
-      "fixture": null,
+      "input": {
+        "tool_input": {
+          "command": "head -n 5 {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "lines": 800
+      },
       "expected_decision": "allow",
-      "reason": "Parser bug: -n and 5 are separate args, 5 is treated as file path — file '5' won't exist so allow"
+      "reason": "-n and its count parsed as one flag — 5 lines is bounded"
+    },
+    {
+      "id": 18,
+      "name": "head-count-over-threshold",
+      "input": {
+        "tool_input": {
+          "command": "head -n 500 {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/large.txt",
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "A count above the threshold is a bulk read wearing head's clothes"
+    },
+    {
+      "id": 19,
+      "name": "chained-command",
+      "input": {
+        "tool_input": {
+          "command": "cd . && cat {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/large.txt",
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "A read anywhere in a chain still lands in context"
+    },
+    {
+      "id": 20,
+      "name": "semicolon-chain",
+      "input": {
+        "tool_input": {
+          "command": "pwd; cat {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/large.txt",
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "Semicolon chains are judged per segment"
+    },
+    {
+      "id": 21,
+      "name": "leading-whitespace",
+      "input": {
+        "tool_input": {
+          "command": "   cat {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/large.txt",
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "A leading space used to defeat the anchored match"
+    },
+    {
+      "id": 22,
+      "name": "path-with-spaces",
+      "input": {
+        "tool_input": {
+          "command": "cat '{{FIXTURES}}/big file.txt'"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/big file.txt",
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "Quoted path containing a space survives argument splitting"
+    },
+    {
+      "id": 23,
+      "name": "minified-single-line",
+      "input": {
+        "tool_input": {
+          "command": "cat {{FIXTURES}}/minified.js"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/minified.js",
+        "bytes": 200000
+      },
+      "expected_decision": "deny",
+      "reason": "One 200KB line — the byte ceiling catches what a line count cannot"
+    },
+    {
+      "id": 24,
+      "name": "unreadable-file",
+      "input": {
+        "tool_input": {
+          "command": "cat {{FIXTURES}}/locked.txt"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/locked.txt",
+        "lines": 800,
+        "mode": "000"
+      },
+      "expected_decision": "allow",
+      "reason": "Unreadable file falls through to Bash, which reports the real error"
+    },
+    {
+      "id": 25,
+      "name": "double-dash-path",
+      "input": {
+        "tool_input": {
+          "command": "cat -- {{FIXTURES}}/large.txt"
+        }
+      },
+      "fixture": {
+        "path": "{{FIXTURES}}/large.txt",
+        "lines": 800
+      },
+      "expected_decision": "deny",
+      "reason": "-- ends flag parsing; the path after it is still a path"
     }
   ]
 }

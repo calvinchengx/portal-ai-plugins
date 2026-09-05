@@ -26,11 +26,18 @@ for arg in "$@"; do
 done
 
 generate_fixture() {
-  local path="$1" lines="$2"
-  if [ "$lines" -eq 0 ]; then
+  local path="$1" lines="$2" bytes="$3" mode="$4"
+  mkdir -p "$(dirname "$path")"
+  if [ -n "$bytes" ] && [ "$bytes" != "null" ]; then
+    # One long line: the minified/JSON shape that a line count cannot see.
+    head -c "$bytes" < /dev/zero | tr '\0' 'a' > "$path"
+  elif [ "$lines" -eq 0 ]; then
     touch "$path"
   else
     seq 1 "$lines" | awk '{print "line "NR}' > "$path"
+  fi
+  if [ -n "$mode" ] && [ "$mode" != "null" ]; then
+    chmod "$mode" "$path"
   fi
 }
 
@@ -47,11 +54,18 @@ setup_fixtures() {
     fixture=$(jq -r ".evals[$i].fixture" "$evals_file")
     [ "$fixture" = "null" ] && continue
 
-    local lines
-    lines=$(jq -r ".evals[$i].fixture.lines" "$evals_file")
+    local lines bytes mode
+    lines=$(jq -r ".evals[$i].fixture.lines // 0" "$evals_file")
+    bytes=$(jq -r ".evals[$i].fixture.bytes // empty" "$evals_file")
+    mode=$(jq -r ".evals[$i].fixture.mode // empty" "$evals_file")
 
+    # A fixture may name its own path. Reverse-engineering it from the command
+    # only works for the simplest ones — quoting and chaining defeat it.
     local input_path
-    input_path=$(jq -r ".evals[$i].input.tool_input.file_path // empty" "$evals_file")
+    input_path=$(jq -r ".evals[$i].fixture.path // empty" "$evals_file")
+    if [ -z "$input_path" ]; then
+      input_path=$(jq -r ".evals[$i].input.tool_input.file_path // empty" "$evals_file")
+    fi
     if [ -z "$input_path" ]; then
       input_path=$(jq -r ".evals[$i].input.tool_input.command // empty" "$evals_file" | sed -E 's/^(cat|head|tail|less|more) +(-[^ ]+ +)*//' | sed 's/ .*//' | tr -d '"'"'")
     fi
@@ -62,7 +76,7 @@ setup_fixtures() {
     # in the working directory; the fixtures those evals rely on are created by
     # their siblings anyway.
     case "$input_path" in
-      "$FIXTURES"/*) generate_fixture "$input_path" "$lines" ;;
+      "$FIXTURES"/*) generate_fixture "$input_path" "$lines" "$bytes" "$mode" ;;
     esac
   done
 }
@@ -81,7 +95,7 @@ run_eval() {
   else
     result=$(echo "$input" | bash "$hook" 2>/dev/null)
   fi
-  actual=$(echo "$result" | jq -r '.decision')
+  actual=$(echo "$result" | jq -r '.hookSpecificOutput.permissionDecision // "none"')
 
   if [ "$actual" = "$expected" ]; then
     printf "  \033[32mPASS\033[0m  %-30s %s\n" "$name" "$reason"
@@ -116,6 +130,7 @@ run_suite() {
     run_eval "$hook" "$name" "$input" "$expected" "$reason" "$env_json"
   done
 
+  chmod -R u+rwX "$FIXTURES" 2>/dev/null || true
   rm -rf "$FIXTURES"
 }
 

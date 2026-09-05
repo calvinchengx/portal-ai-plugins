@@ -5,36 +5,124 @@
 MIN_LINES="${SHUNT_MIN_LINES:-350}"
 case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
 
+MAX_BYTES="${SHUNT_MAX_BYTES:-50000}"
+case "$MAX_BYTES" in ''|*[!0-9]*) MAX_BYTES=50000 ;; esac
+
+# PreToolUse decisions travel in hookSpecificOutput; a bare top-level
+# {"decision": ...} fails schema validation and is dropped as a non-blocking
+# error, which would let every read through.
+allow() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'
+  exit 0
+}
+
+deny() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(jq -Rn --arg r "$1" '$r')"
+  exit 0
+}
+
 input=$(cat)
 
 command=$(echo "$input" | jq -r '.tool_input.command // empty')
-[ -z "$command" ] && { echo '{"decision": "allow"}'; exit 0; }
+[ -z "$command" ] && allow
 
-# Skip piped commands (cat file | grep) — those are targeted reads
-echo "$command" | grep -qE '\|' && { echo '{"decision": "allow"}'; exit 0; }
+# A read can sit anywhere in a chain (`cd src && cat big.ts`), so judge each
+# segment on its own rather than only the head of the whole string.
+segments=$(printf '%s' "$command" | awk '{gsub(/\|\||&&|;/, "\n"); print}')
 
-# Skip redirections (cat file > out) — not a read-into-context operation
-echo "$command" | grep -qE '>' && { echo '{"decision": "allow"}'; exit 0; }
+while IFS= read -r segment; do
+  # Trim surrounding whitespace — a leading space used to defeat the match.
+  segment="${segment#"${segment%%[![:space:]]*}"}"
+  segment="${segment%"${segment##*[![:space:]]}"}"
+  [ -z "$segment" ] && continue
 
-# Extract file path from read commands, stripping flags (e.g. cat -n, head -100)
-file_path=""
-if echo "$command" | grep -qE '^(cat|head|tail|less|more) '; then
-  # Remove the command name, then strip any flags (-n, -100, --number, etc.)
-  args=$(echo "$command" | sed -E 's/^(cat|head|tail|less|more) +//')
-  for arg in $args; do
-    case "$arg" in
-      -*) continue ;;
-      *)  file_path=$(echo "$arg" | tr -d '"'"'"); break ;;
-    esac
+  # Skip pipes (cat file | grep) — those are targeted reads.
+  case "$segment" in *"|"*) continue ;; esac
+  # Skip redirections (cat file > out) — not a read-into-context operation.
+  case "$segment" in *">"*) continue ;; esac
+
+  case "$segment" in
+    cat\ *|head\ *|tail\ *|less\ *|more\ *) ;;
+    *) continue ;;
+  esac
+
+  # Split quote-aware so `cat 'big file.txt'` yields one argument. xargs does
+  # the splitting; unbalanced quotes make it fail, which leaves no path and
+  # falls through to allow. printf rather than xargs's default echo, which
+  # would swallow a bare `-n` token as its own flag.
+  args=()
+  while IFS= read -r token; do
+    [ -n "$token" ] && args+=("$token")
+  done < <(printf '%s' "$segment" | xargs -n1 printf '%s\n' 2>/dev/null)
+  [ ${#args[@]} -lt 2 ] && continue
+
+  reader="${args[0]}"
+  file_path=""
+  count=""
+  count_unit="lines"
+  end_of_flags=false
+  i=1
+  while [ "$i" -lt ${#args[@]} ]; do
+    arg="${args[$i]}"
+    if [ "$end_of_flags" = false ]; then
+      # -n/-c take a count for head and tail only; for cat they are plain
+      # boolean flags (`cat -n` numbers lines) and must not eat the path.
+      case "$reader" in
+        head|tail)
+          case "$arg" in
+            -n|-c)
+              [ "$arg" = "-c" ] && count_unit="bytes"
+              i=$((i + 1))
+              count="${args[$i]:-}"
+              i=$((i + 1))
+              continue
+              ;;
+            -n*) count="${arg#-n}"; i=$((i + 1)); continue ;;
+            -c*) count="${arg#-c}"; count_unit="bytes"; i=$((i + 1)); continue ;;
+            -[0-9]*) count="${arg#-}"; i=$((i + 1)); continue ;;
+          esac
+          ;;
+      esac
+      case "$arg" in
+        --) end_of_flags=true; i=$((i + 1)); continue ;;
+        -*) i=$((i + 1)); continue ;;
+      esac
+    fi
+    file_path="$arg"
+    break
   done
-fi
 
-[ -z "$file_path" ] && { echo '{"decision": "allow"}'; exit 0; }
-[ ! -f "$file_path" ] && { echo '{"decision": "allow"}'; exit 0; }
+  [ -z "$file_path" ] && continue
+  [ ! -f "$file_path" ] && continue
 
-lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
-if [ "$lines" -gt "$MIN_LINES" ]; then
-  echo "{\"decision\": \"block\", \"reason\": \"File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to AiKA instead of cat/head/tail.\"}"
-else
-  echo '{"decision": "allow"}'
-fi
+  # head/tail are inherently bounded — they put `count` lines in context, not
+  # the file. Treat a bounded count the same way the Read hook treats an
+  # explicit offset/limit, and default to head/tail's own 10-line default.
+  case "$reader" in
+    head|tail)
+      case "$count" in
+        ''|*[!0-9]*) count=10 ;;
+      esac
+      if [ "$count_unit" = "bytes" ]; then
+        [ "$count" -le "$MAX_BYTES" ] && continue
+      else
+        [ "$count" -le "$MIN_LINES" ] && continue
+      fi
+      ;;
+  esac
+
+  # An unreadable file must fall through to Bash, which reports the real error.
+  lines=$(wc -l "$file_path" 2>/dev/null | awk '{print $1}')
+  bytes=$(wc -c "$file_path" 2>/dev/null | awk '{print $1}')
+  case "$lines" in ''|*[!0-9]*) continue ;; esac
+  case "$bytes" in ''|*[!0-9]*) continue ;; esac
+
+  if [ "$lines" -gt "$MIN_LINES" ]; then
+    deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to AiKA instead of cat/head/tail."
+  elif [ "$bytes" -gt "$MAX_BYTES" ]; then
+    deny "File is ${bytes} bytes (threshold: ${MAX_BYTES}). Use the /bulk-reader skill to delegate this read to AiKA instead of cat/head/tail."
+  fi
+done <<< "$segments"
+
+allow

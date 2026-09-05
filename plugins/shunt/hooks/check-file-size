@@ -5,6 +5,25 @@
 MIN_LINES="${SHUNT_MIN_LINES:-350}"
 case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
 
+# Line count alone misses minified and single-line JSON files, which are the
+# worst case for context. Cap bytes too.
+MAX_BYTES="${SHUNT_MAX_BYTES:-50000}"
+case "$MAX_BYTES" in ''|*[!0-9]*) MAX_BYTES=50000 ;; esac
+
+# PreToolUse decisions travel in hookSpecificOutput; a bare top-level
+# {"decision": ...} fails schema validation and is dropped as a non-blocking
+# error, which would let every read through.
+allow() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'
+  exit 0
+}
+
+deny() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(jq -Rn --arg r "$1" '$r')"
+  exit 0
+}
+
 input=$(cat)
 
 file_path=$(echo "$input" | jq -r '.tool_input.file_path // empty')
@@ -13,21 +32,30 @@ limit=$(echo "$input" | jq -r '.tool_input.limit // empty')
 
 # Allow targeted reads (offset or limit set) — Claude already knows what it needs
 if [ -n "$offset" ] || [ -n "$limit" ]; then
-  echo '{"decision": "allow"}'
-  exit 0
+  allow
 fi
 
 # Allow if file doesn't exist or path is empty
 if [ -z "$file_path" ] || [ ! -f "$file_path" ]; then
-  echo '{"decision": "allow"}'
-  exit 0
+  allow
 fi
+
+# An unreadable file must fall through to Read, which reports the real error.
+# Blocking here would send Claude to bulk-read, which cannot read it either.
+lines=$(wc -l "$file_path" 2>/dev/null | awk '{print $1}')
+bytes=$(wc -c "$file_path" 2>/dev/null | awk '{print $1}')
+case "$lines" in ''|*[!0-9]*) allow ;; esac
+case "$bytes" in ''|*[!0-9]*) allow ;; esac
 
 # Allow small files — delegation overhead isn't worth it
-lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
-if [ "$lines" -le "$MIN_LINES" ]; then
-  echo '{"decision": "allow"}'
-  exit 0
+if [ "$lines" -le "$MIN_LINES" ] && [ "$bytes" -le "$MAX_BYTES" ]; then
+  allow
 fi
 
-echo "{\"decision\": \"block\", \"reason\": \"File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to AiKA instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need.\"}"
+if [ "$lines" -gt "$MIN_LINES" ]; then
+  measure="${lines} lines (threshold: ${MIN_LINES})"
+else
+  measure="${bytes} bytes (threshold: ${MAX_BYTES})"
+fi
+
+deny "File is ${measure}. Use the /bulk-reader skill to delegate this read to AiKA instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need."
