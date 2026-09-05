@@ -16,6 +16,7 @@ CAPTURED_PAYLOAD="$WORKDIR/captured-payload.json"
 CAPTURED_HEADERS="$WORKDIR/captured-headers.txt"
 
 export ANTHROPIC_API_KEY="test-key-not-real"
+export SHUNT_TRANSPORT="api"
 
 # shellcheck source=../scripts/lib/worker.sh
 . "$PLUGIN_DIR/scripts/lib/worker.sh"
@@ -143,6 +144,60 @@ case "$warn" in
   *"truncated"*) check "truncation-warned" "y" "y" "max_tokens is surfaced, not swallowed" ;;
   *)             check "truncation-warned" "y" "n" "max_tokens is surfaced, not swallowed" ;;
 esac
+
+# ── CLI transport ──
+
+# The default transport shells out to `claude -p`. Stub it and check the
+# envelope handling; the api checks above stay pinned to SHUNT_TRANSPORT=api.
+CAPTURED_PROMPT="$WORKDIR/captured-prompt.txt"
+CAPTURED_SYSTEM="$WORKDIR/captured-system.txt"
+shunt_cli() {
+  printf '%s' "$1" > "$CAPTURED_SYSTEM"
+  cp "$2" "$CAPTURED_PROMPT"
+  cat <<'JSON'
+{"is_error":false,"subtype":"success","result":"- first line\n- second line",
+ "total_cost_usd":0.0028,
+ "usage":{"input_tokens":9,"cache_creation_input_tokens":730,"cache_read_input_tokens":11337,"output_tokens":12}}
+JSON
+}
+
+SHUNT_TRANSPORT="cli"
+check "cli-answer-extracted" "- first line
+- second line" "$(shunt_invoke bulk-reader "$prefix_file" "$suffix_file")" \
+  "reads .result from the CLI envelope"
+check "cli-prompt-joined" "$(cat "$prefix_file" "$suffix_file")" "$(cat "$CAPTURED_PROMPT")" \
+  "corpus and question reach the worker intact"
+check "cli-system-prompt" "true" "$(grep -q '^You are a precise code analyst' "$CAPTURED_SYSTEM" && echo true)" \
+  "the mode instructions become the system prompt"
+
+shunt_invoke bulk-reader "$prefix_file" "$suffix_file" >/dev/null
+check "cli-usage-reported" "in 9 | cache write 730 | cache read 11337 | out 12 | \$0.0028" "$SHUNT_LAST_USAGE" \
+  "harness overhead and cost are visible per call"
+
+( shunt_cli() { echo '{"is_error":true,"subtype":"error_during_execution","result":"boom"}'; }
+  guard=$(shunt_invoke bulk-reader "$prefix_file" "$suffix_file" 2>&1 >/dev/null) && exit 1
+  case "$guard" in *"boom"*) exit 0 ;; *) exit 1 ;; esac ) && rc=0 || rc=$?
+check "cli-error-surfaced" "0" "$rc" "is_error is honoured, not treated as an answer"
+
+( shunt_cli() { echo 'not json'; }
+  guard=$(shunt_invoke bulk-reader "$prefix_file" "$suffix_file" 2>&1 >/dev/null) && exit 1
+  case "$guard" in *"unparseable"*) exit 0 ;; *) exit 1 ;; esac ) && rc=0 || rc=$?
+check "cli-garbled-fails" "0" "$rc" "unparseable CLI output is an error"
+
+( shunt_cli() { printf ''; }
+  shunt_invoke bulk-reader "$prefix_file" "$suffix_file" >/dev/null 2>&1 ) && rc=0 || rc=$?
+check "cli-empty-fails" "1" "$rc" "an empty CLI response is a failure"
+
+( SHUNT_TRANSPORT="nonsense"
+  shunt_preflight >/dev/null 2>&1 ) && rc=0 || rc=$?
+check "unknown-transport-fails" "1" "$rc" "an unknown transport is rejected in preflight"
+
+# The cli transport must not demand a credential — that is the whole point.
+( unset ANTHROPIC_API_KEY
+  SHUNT_TRANSPORT="cli" SHUNT_CLAUDE_BIN="$(command -v jq)" shunt_preflight >/dev/null 2>&1 ) && rc=0 || rc=$?
+check "cli-needs-no-credential" "0" "$rc" "the CLI transport reuses the Claude Code login"
+
+SHUNT_TRANSPORT="api"
 
 # ── Payload ceiling ──
 

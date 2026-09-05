@@ -1,17 +1,26 @@
 #!/bin/bash
 # Shared worker plumbing for shunt's delegation scripts.
 #
-# Delegation goes straight to the Claude API (Messages, POST /v1/messages)
-# against a cheap worker model. Upstream shunt routes through the Portal CLI's
-# aika:invoke-chat action, which needs a Portal instance with AiKA enabled;
-# this transport needs only an Anthropic credential, so the plugin works
-# without any Portal deployment.
+# Delegation runs against a cheap worker model over one of two transports.
+# Upstream shunt routes through the Portal CLI's aika:invoke-chat action, which
+# needs a Portal instance with AiKA enabled; neither transport here does.
+#
+#   cli (default) — shells out to `claude -p`, reusing the Claude Code login.
+#                   No API key. Costs ~12K cached tokens of harness overhead per
+#                   delegation, written once per cache TTL and read cheaply
+#                   after, and it spends from the same quota Claude Code itself
+#                   uses.
+#   api           — POSTs to the Messages API. Needs ANTHROPIC_API_KEY or an
+#                   `ant auth login` profile. Minimal overhead and explicit
+#                   cache_control on the corpus, but bills separately.
 #
 # Each delegation is one shot: no conversation state is kept anywhere. Re-ask
 # with the same corpus rather than trying to carry context across calls — the
 # corpus is cached (see below), so repeating it is close to free.
 
+SHUNT_TRANSPORT="${SHUNT_TRANSPORT:-cli}"
 SHUNT_MODEL="${SHUNT_MODEL:-claude-haiku-4-5}"
+SHUNT_CLAUDE_BIN="${SHUNT_CLAUDE_BIN:-claude}"
 SHUNT_MAX_TOKENS="${SHUNT_MAX_TOKENS:-16000}"
 SHUNT_API_URL="${SHUNT_API_URL:-https://api.anthropic.com/v1/messages}"
 SHUNT_CURL_BIN="${SHUNT_CURL_BIN:-curl}"
@@ -54,15 +63,28 @@ shunt_tmpfile() {
 shunt_preflight() {
   local missing=""
   command -v jq >/dev/null 2>&1 || missing=" jq"
-  command -v "$SHUNT_CURL_BIN" >/dev/null 2>&1 || missing="$missing $SHUNT_CURL_BIN"
+
+  case "$SHUNT_TRANSPORT" in
+    cli)
+      command -v "$SHUNT_CLAUDE_BIN" >/dev/null 2>&1 || missing="$missing $SHUNT_CLAUDE_BIN"
+      ;;
+    api)
+      command -v "$SHUNT_CURL_BIN" >/dev/null 2>&1 || missing="$missing $SHUNT_CURL_BIN"
+      ;;
+    *)
+      echo "Error: unknown SHUNT_TRANSPORT \"$SHUNT_TRANSPORT\" (expected cli or api)." >&2
+      return 1
+      ;;
+  esac
 
   if [ -n "$missing" ]; then
     echo "Error: missing required command(s):$missing" >&2
-    echo "  jq   — brew install jq" >&2
+    echo "  jq — brew install jq" >&2
     return 1
   fi
 
-  if ! shunt_auth_header >/dev/null; then
+  # Only the api transport needs a credential; cli reuses the Claude Code login.
+  if [ "$SHUNT_TRANSPORT" = "api" ] && ! shunt_auth_header >/dev/null; then
     return 1
   fi
   return 0
@@ -113,6 +135,64 @@ shunt_http() {
   "$SHUNT_CURL_BIN" "${args[@]}" --data-binary "@$body_file" "$SHUNT_API_URL"
 }
 
+# One `claude -p` run. Split out so the eval suite can stub it.
+#   $1 system prompt
+#   $2 prompt file
+#
+# The worker is stripped down deliberately: no tools, no MCP servers, no skills.
+# Claude Code otherwise loads its full harness into the worker's context — 28K
+# tokens before the corpus even arrives, which would defeat the point.
+shunt_cli() {
+  local system="$1" prompt_file="$2"
+  "$SHUNT_CLAUDE_BIN" -p \
+    --model "$SHUNT_MODEL" \
+    --output-format json \
+    --system-prompt "$system" \
+    --disallowedTools "Bash Read Write Edit MultiEdit NotebookEdit Glob Grep WebFetch WebSearch Task Agent TodoWrite" \
+    --strict-mcp-config \
+    --disable-slash-commands \
+    < "$prompt_file"
+}
+
+# Reads the `claude -p --output-format json` envelope.
+shunt_invoke_cli() {
+  local system="$1" prefix_file="$2" suffix_file="$3"
+  local prompt_file response text
+
+  shunt_tmpfile prompt_file || return 1
+  cat "$prefix_file" > "$prompt_file"
+  [ -n "$suffix_file" ] && cat "$suffix_file" >> "$prompt_file"
+
+  response=$(shunt_cli "$system" "$prompt_file")
+  if [ -z "$response" ]; then
+    echo "Error: \`$SHUNT_CLAUDE_BIN -p\` returned nothing." >&2
+    return 1
+  fi
+
+  if ! printf '%s' "$response" | jq -e . >/dev/null 2>&1; then
+    echo "Error: \`$SHUNT_CLAUDE_BIN -p\` returned unparseable output." >&2
+    printf '%s\n' "$response" >&2
+    return 1
+  fi
+
+  if [ "$(printf '%s' "$response" | jq -r '.is_error // false')" = "true" ]; then
+    echo "Error: the worker run failed: $(printf '%s' "$response" | jq -r '.result // .subtype // "no detail"')" >&2
+    return 1
+  fi
+
+  text=$(printf '%s' "$response" | jq -r '.result // empty')
+  if [ -z "$text" ]; then
+    echo "Error: the worker returned no text." >&2
+    printf '%s\n' "$response" >&2
+    return 1
+  fi
+
+  SHUNT_LAST_USAGE=$(printf '%s' "$response" | jq -r '
+    "in \(.usage.input_tokens // 0) | cache write \(.usage.cache_creation_input_tokens // 0) | cache read \(.usage.cache_read_input_tokens // 0) | out \(.usage.output_tokens // 0) | $\(.total_cost_usd // 0)"')
+
+  printf '%s\n' "$text"
+}
+
 # Runs one worker turn and prints the answer.
 #   $1 mode name (bulk-reader | code-writer)
 #   $2 file holding the stable prefix (the file corpus, or the reference file)
@@ -129,6 +209,11 @@ shunt_invoke() {
   if ! system=$(shunt_system_prompt "$mode_name"); then
     echo "Error: unknown worker mode \"$mode_name\"." >&2
     return 1
+  fi
+
+  if [ "$SHUNT_TRANSPORT" = "cli" ]; then
+    shunt_invoke_cli "$system" "$prefix_file" "$suffix_file"
+    return $?
   fi
 
   shunt_tmpfile payload_file || return 1

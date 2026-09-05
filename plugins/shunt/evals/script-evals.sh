@@ -1,8 +1,9 @@
 #!/bin/bash
 # Script evals for scripts/bulk-read and scripts/code-write.
 #
-# Drives the real scripts end to end against a stubbed HTTP layer installed via
-# SHUNT_CURL_BIN, so these need no network, no credential and no tokens.
+# Drives the real scripts end to end against a stubbed `claude` binary installed
+# via SHUNT_CLAUDE_BIN — the default transport — so these need no network, no
+# credential and no spend.
 #
 # Prints one PASS/FAIL line per check plus a machine-readable "## <pass> <fail>"
 # trailer for run.sh.
@@ -27,23 +28,22 @@ check() {
   fi
 }
 
-# A fake curl that answers with whatever STUB_ANSWER_FILE holds, in the shape
-# POST /v1/messages returns. STUB_ERROR forces an API error body instead.
-STUB="$WORKDIR/curl"
+# A fake `claude` that answers with whatever STUB_ANSWER_FILE holds, in the
+# shape `claude -p --output-format json` returns. STUB_ERROR forces a failure.
+STUB="$WORKDIR/claude"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/bash
+cat >/dev/null   # drain the prompt on stdin
 if [ -n "${STUB_ERROR:-}" ]; then
-  echo '{"type":"error","error":{"type":"api_error","message":"stub failure"}}'
+  echo '{"is_error":true,"subtype":"error_during_execution","result":"stub failure"}'
   exit 0
 fi
 jq -n --rawfile text "$STUB_ANSWER_FILE" \
-  '{type: "message", role: "assistant", content: [{type: "text", text: $text}],
-    stop_reason: "end_turn",
-    usage: {input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 5}}'
+  '{is_error: false, subtype: "success", result: $text, total_cost_usd: 0.003,
+    usage: {input_tokens: 9, cache_creation_input_tokens: 0, cache_read_input_tokens: 11337, output_tokens: 5}}'
 STUBEOF
 chmod +x "$STUB"
-export SHUNT_CURL_BIN="$STUB"
-export ANTHROPIC_API_KEY="test-key-not-real"
+export SHUNT_CLAUDE_BIN="$STUB"
 
 ANSWER="$WORKDIR/answer.txt"
 export STUB_ANSWER_FILE="$ANSWER"
